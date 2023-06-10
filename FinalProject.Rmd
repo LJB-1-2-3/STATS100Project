@@ -1,0 +1,210 @@
+---
+title: "Stats 100 Project"
+author: "Leonardo Bonanno"
+date: "May 18, 2023"
+header-includes:
+   - \usepackage{bbm, amsmath,amsfonts,amsthm,amssymb,mathrsfs,amsxtra,amscd,latexsym, xcolor, graphicx, fvextra}
+   - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+output: pdf_document
+---
+
+\newcommand{\Var}{\mathrm{Var}}
+
+```{r}
+#in order to run this code, you will need to install these packages. You can do so by going to the install button, or by going to the console and typing, for example, install.packages("knitr")
+suppressPackageStartupMessages(library(knitr)) #makes pdfs
+suppressPackageStartupMessages(library(latex2exp))
+suppressPackageStartupMessages(library(ggplot2)) #makes nice plots
+suppressPackageStartupMessages(library(tidyverse))
+#good library for data manipulation, includes dplyr and ggplot
+# you can read more about the tidyverse at: https://r4ds.had.co.nz/
+# you'll need this library for regularization if you use it
+suppressPackageStartupMessages(library(glmnet))
+# this library gives you the calibration plot
+suppressPackageStartupMessages(library(predtools))
+# gives you the logistic function (1/(1+e^{-x})) which might be helpful
+suppressPackageStartupMessages(library(psych))
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Acknowledgements
+
+This is the code for loading the data.
+
+```{r}
+startYear = 2001
+endYear = 2019
+testYear = 2020
+
+
+my_atp_singles_files = paste0("tennis_atp-master/atp_matches_", startYear:testYear,".csv")
+atp_singles_data = lapply(my_atp_singles_files, read.csv)
+
+my_wta_singles_files = paste0("tennis_wta-master/wta_matches_", startYear:testYear,".csv")
+wta_singles_data = lapply(my_wta_singles_files, read.csv)
+
+
+```
+
+Code for ATP rankings
+
+
+```{r}
+rating_dict = list()
+matches_dict = list()
+ranking_dict = list()
+
+K = 40
+s = 174
+
+update <- function(R_i, R_j) {
+  K/(1 + exp((R_i - R_j)/s))
+}
+
+for (year in startYear:endYear) {
+  year_dat = atp_singles_data[[year-startYear + 1]]
+  for (row in 1:nrow(year_dat)) {
+    winner_name = year_dat[row, "winner_name"]
+    loser_name = year_dat[row, "loser_name"]
+    if (!(winner_name %in% names(rating_dict))) {
+      rating_dict[winner_name] = 1500
+      matches_dict[winner_name] = 0
+    } 
+    if (!(loser_name %in% names(rating_dict))) {
+      rating_dict[loser_name] = 1500
+      matches_dict[loser_name] = 0
+    } 
+    ranking_dict[winner_name] = year_dat[row, "winner_rank"]
+    ranking_dict[loser_name] = year_dat[row, "loser_rank"]
+    winner_rating = rating_dict[[winner_name]]
+    loser_rating = rating_dict[[loser_name]]
+    matches_dict[winner_name] = matches_dict[[winner_name]] + 1
+    matches_dict[loser_name] = matches_dict[[loser_name]] + 1
+    ratingChange = update(winner_rating, loser_rating)
+    rating_dict[winner_name] = winner_rating + ratingChange
+    rating_dict[loser_name] = loser_rating - ratingChange
+  }
+}
+```
+
+```{r}
+rating_dict_filter = list()
+ranking_dict_filter = list()
+for (player in names(matches_dict)) {
+  if (matches_dict[player] > 25) {
+    if (!(is.na(ranking_dict[[player]]))) {
+      if (ranking_dict[[player]] < 200) {
+        rating_dict_filter[player] = rating_dict[[player]]
+        ranking_dict_filter[player] = ranking_dict[[player]]
+      }  
+    }
+  }
+}
+```
+
+
+Testing Data
+
+```{r}
+test_dat = atp_singles_data[[20]]
+dim(test_dat)
+counter = 0
+for (row in 1:nrow(test_dat)) {
+    winner_name = year_dat[row, "winner_name"]
+    loser_name = year_dat[row, "loser_name"]
+    if (!(winner_name %in% names(rating_dict))) {
+      rating_dict[winner_name] = 1500
+      matches_dict[winner_name] = 0
+    } 
+    if (!(loser_name %in% names(rating_dict))) {
+      rating_dict[loser_name] = 1500
+      matches_dict[loser_name] = 0
+    } 
+    winner_rating = rating_dict[[winner_name]]
+    loser_rating = rating_dict[[loser_name]]
+    if (winner_rating >= loser_rating) {
+      counter = counter + 1
+    }
+    matches_dict[winner_name] = matches_dict[[winner_name]] + 1
+    matches_dict[loser_name] = matches_dict[[loser_name]] + 1
+    ratingChange = update(winner_rating, loser_rating)
+    rating_dict[winner_name] = winner_rating + ratingChange
+    rating_dict[loser_name] = loser_rating - ratingChange
+}
+```
+
+ATP Rankings Data
+
+```{r}
+atp_counter = 0
+matches_counter = 0
+for (row in 1:nrow(test_dat)) {
+  winner_rank = test_dat[row, "winner_rank"]
+  loser_rank = test_dat[row, "loser_rank"]
+  if (is.na(loser_rank) | is.na(winner_rank)) {
+    next
+  }
+  matches_counter = matches_counter + 1
+  if (winner_rank < loser_rank) {
+    atp_counter = atp_counter + 1
+  }
+}
+atp_counter/matches_counter
+
+```
+Code for WTA rankings
+
+```{r}
+rating_dict = list()
+matches_dict = list()
+
+for (year in startYear:endYear) {
+  year_dat = wta_singles_data[[year-startYear + 1]]
+  for (row in 1:nrow(year_dat)) {
+    winner_name = year_dat[row, "winner_name"]
+    loser_name = year_dat[row, "loser_name"]
+    if (!(winner_name %in% names(rating_dict))) {
+      rating_dict[winner_name] = 1500
+      matches_dict[winner_name] = 0
+    } 
+    if (!(loser_name %in% names(rating_dict))) {
+      rating_dict[loser_name] = 1500
+      matches_dict[loser_name] = 0
+    } 
+    winner_rating = rating_dict[[winner_name]]
+    loser_rating = rating_dict[[loser_name]]
+    matches_dict[winner_name] = matches_dict[[winner_name]] + 1
+    matches_dict[loser_name] = matches_dict[[loser_name]] + 1
+    ratingChange = update(winner_rating, loser_rating)
+    rating_dict[winner_name] = winner_rating + ratingChange
+    rating_dict[loser_name] = loser_rating - ratingChange
+  }
+}
+print(length(rating_dict))
+for (player in names(rating_dict)) {
+  print(rating_dict[player])
+}
+
+```
+
+Betting Odds Code
+
+```{r}
+
+betting_us_open_data = read.csv("usopen2020.csv")
+dim(betting_us_open_data)
+PSW_counter = 0
+B365_Counter = 0
+PSl
+for (row in 1:nrow(betting_us_open_data)) {
+  if (betting_us_open_data[row, "PSW"] < betting_us_open_data[row, "PSL"]) {
+  PSW_counter = PSW_counter + 1
+  }
+}
+
+
+```
+
+
+
+

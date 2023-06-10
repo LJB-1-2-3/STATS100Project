@@ -1,0 +1,465 @@
+---
+title: "Stats 100 Project More"
+author: "Leonardo Bonanno"
+date: "May 18, 2023"
+header-includes:
+   - \usepackage{bbm, amsmath,amsfonts,amsthm,amssymb,mathrsfs,amsxtra,amscd,latexsym, xcolor, graphicx, fvextra}
+   - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+output: pdf_document
+---
+
+\newcommand{\Var}{\mathrm{Var}}
+
+```{r}
+#in order to run this code, you will need to install these packages. You can do so by going to the install button, or by going to the console and typing, for example, install.packages("knitr")
+suppressPackageStartupMessages(library(knitr)) #makes pdfs
+suppressPackageStartupMessages(library(latex2exp))
+suppressPackageStartupMessages(library(ggplot2)) #makes nice plots
+suppressPackageStartupMessages(library(tidyverse))
+#good library for data manipulation, includes dplyr and ggplot
+# you can read more about the tidyverse at: https://r4ds.had.co.nz/
+# you'll need this library for regularization if you use it
+suppressPackageStartupMessages(library(glmnet))
+# this library gives you the calibration plot
+suppressPackageStartupMessages(library(predtools))
+# gives you the logistic function (1/(1+e^{-x})) which might be helpful
+suppressPackageStartupMessages(library(psych))
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Acknowledgements
+
+This is the code for loading the data.
+
+```{r}
+startYear = 2001
+endYear = 2021
+testYear = 2022
+
+my_atp_singles_files = paste0("tennis_atp-master/atp_matches_", startYear:testYear,".csv")
+atp_singles_data = lapply(my_atp_singles_files, read.csv)
+
+betting_data = read.csv("2022men.csv")
+
+```
+
+Code for Calculating ELO Ratings (Start Year - End Year)
+
+
+```{r}
+matchesPlayed = list()
+atpRankings = list()
+eloRatings = list()
+grassRatings = list()
+hardRatings = list()
+clayRatings = list()
+
+K = 40
+s = 174
+
+update <- function(R_i, R_j) {
+  K/(1 + exp((R_i - R_j)/s))
+}
+
+for (year in startYear:endYear) {
+   year_dat = atp_singles_data[[year-startYear + 1]]
+   year_dat = year_dat[order(year_dat$tourney_date),]
+  for (row in 1:nrow(year_dat)) {
+    winner_name = year_dat[row, "winner_name"]
+    loser_name = year_dat[row, "loser_name"]
+    surface = year_dat[row, "surface"]
+    if (!(winner_name %in% names(eloRatings))) {
+      eloRatings[winner_name] = 1500
+      clayRatings[winner_name] = 1500
+      grassRatings[winner_name] = 1500
+      hardRatings[winner_name] = 1500
+      matchesPlayed[winner_name] = 0
+    } 
+    if (!(loser_name %in% names(eloRatings))) {
+      eloRatings[loser_name] = 1500
+      clayRatings[loser_name] = 1500
+      grassRatings[loser_name] = 1500
+      hardRatings[loser_name] = 1500
+      matchesPlayed[loser_name] = 0
+    } 
+    atpRankings[winner_name] = year_dat[row, "winner_rank"]
+    atpRankings[loser_name] = year_dat[row, "loser_rank"]
+    matchesPlayed[winner_name] = matchesPlayed[[winner_name]] + 1
+    matchesPlayed[loser_name] = matchesPlayed[[loser_name]] + 1
+    
+    winner_rating = eloRatings[[winner_name]]
+    loser_rating = eloRatings[[loser_name]]
+    ratingChange = update(winner_rating, loser_rating)
+    eloRatings[winner_name] = winner_rating + ratingChange
+    eloRatings[loser_name] = loser_rating - ratingChange
+    
+    if (surface == "Clay") {
+      winner_rating = clayRatings[[winner_name]]
+      loser_rating = clayRatings[[loser_name]]
+      ratingChange = update(winner_rating, loser_rating)
+      clayRatings[winner_name] = winner_rating + ratingChange
+      clayRatings[loser_name] = loser_rating - ratingChange  
+    }
+    if (surface == "Grass") {
+      winner_rating = grassRatings[[winner_name]]
+      loser_rating = grassRatings[[loser_name]]
+      ratingChange = update(winner_rating, loser_rating)
+      grassRatings[winner_name] = winner_rating + ratingChange
+      grassRatings[loser_name] = loser_rating - ratingChange  
+    }
+    if (surface == "Hard") {
+      winner_rating = hardRatings[[winner_name]]
+      loser_rating = hardRatings[[loser_name]]
+      ratingChange = update(winner_rating, loser_rating)
+      hardRatings[winner_name] = winner_rating + ratingChange
+      hardRatings[loser_name] = loser_rating - ratingChange  
+    }
+  }
+}
+```
+
+Regular ELO
+
+```{r}
+slams = list("US Open", "Australian Open", "Roland Garros", "Wimbledon")
+year = testYear - startYear + 1
+test_dat = atp_singles_data[[year]]
+testPlayed = matchesPlayed
+testRatings = eloRatings
+match_counter = 0
+correct_prediction_counter = 0
+sums_higher = 0
+wrong_prediction_counter = 0
+sums_lower = 0
+brier_sum = 0
+for (row in 1:nrow(test_dat)) {
+    winner_name = test_dat[row, "winner_name"]
+    loser_name = test_dat[row, "loser_name"]
+    if (!(winner_name %in% names(testRatings))) {
+      testRatings[winner_name] = 1500
+    } 
+    if (!(loser_name %in% names(testRatings))) {
+      testRatings[loser_name] = 1500
+    } 
+    winner_rating = testRatings[[winner_name]]
+    loser_rating = testRatings[[loser_name]]
+    if (test_dat[row, "tourney_name"] %in% slams) {
+      match_counter = match_counter + 1
+      pred = 1 - 1/(1 + exp((abs(winner_rating - loser_rating))/174))
+      if (winner_rating >= loser_rating) {
+        correct_prediction_counter = correct_prediction_counter + 1
+        sums_higher = sums_higher + pred
+        brier_sum = brier_sum + (1 - pred) ** 2
+      }  
+      else {
+        wrong_prediction_counter = wrong_prediction_counter + 1
+        sums_lower = sums_lower + pred
+        brier_sum = brier_sum + pred ** 2
+      }
+    }
+    ratingChange = update(winner_rating, loser_rating)
+    testRatings[winner_name] = winner_rating + ratingChange
+    testRatings[loser_name] = loser_rating - ratingChange
+}
+accuracy = 100 * (correct_prediction_counter/match_counter)
+accuracy
+calibration = sums_higher/correct_prediction_counter
+calibration
+discrimination = calibration - (sums_lower/wrong_prediction_counter)
+discrimination
+brier_score = brier_sum/match_counter
+brier_score
+```
+```{r}
+hist(unlist(testRatings), xlab = "Rating", main = "Histogram of ELO Ratings")
+```
+
+Surface ELO
+
+```{r}
+slams = list("US Open", "Australian Open", "Roland Garros", "Wimbledon")
+year = testYear - startYear + 1
+test_dat = atp_singles_data[[year]]
+testPlayed = matchesPlayed
+testRatings = eloRatings
+testClayRatings = clayRatings
+testHardRatings = hardRatings
+testGrassRatings = grassRatings
+match_counter = 0
+correct_prediction_counter = 0
+sums_higher = 0
+wrong_prediction_counter = 0
+sums_lower = 0
+brier_sum = 0
+for (row in 1:nrow(test_dat)) {
+    winner_name = test_dat[row, "winner_name"]
+    loser_name = test_dat[row, "loser_name"]
+    if (!(winner_name %in% names(testRatings))) {
+      testRatings[winner_name] = 1500
+      testClayRatings[winner_name] = 1500
+      testGrassRatings[winner_name] = 1500
+      testHardRatings[winner_name] = 1500
+    } 
+    if (!(loser_name %in% names(testRatings))) {
+      testRatings[loser_name] = 1500
+      testClayRatings[loser_name] = 1500
+      testGrassRatings[loser_name] = 1500
+      testHardRatings[loser_name] = 1500
+    } 
+    surface_winner_rating = 0
+    surface_loser_rating = 0
+    surface = test_dat[row, "surface"]
+    if (surface == "Hard") {
+      surface_winner_rating = testHardRatings[[winner_name]]
+      surface_loser_rating = testHardRatings[[loser_name]] 
+    }
+    if (surface == "Clay") {
+      surface_winner_rating = testClayRatings[[winner_name]]
+      surface_loser_rating = testClayRatings[[loser_name]]   
+    }
+    if (surface == "Grass") {
+      surface_winner_rating = testGrassRatings[[winner_name]]
+      surface_loser_rating = testGrassRatings[[loser_name]]   
+    }
+
+    winner_rating = testRatings[[winner_name]]
+    loser_rating = testRatings[[loser_name]]
+    if (test_dat[row, "tourney_name"] %in% slams) {
+      match_counter = match_counter + 1
+      pred = 1 - 1/(1 + exp((abs(surface_winner_rating - surface_loser_rating))/174))
+      if (surface_winner_rating >= surface_loser_rating) {
+        correct_prediction_counter = correct_prediction_counter + 1
+        sums_higher = sums_higher + pred
+        brier_sum = brier_sum + (1 - pred) ** 2
+      }  
+      else {
+        wrong_prediction_counter = wrong_prediction_counter + 1
+        sums_lower = sums_lower + pred
+        brier_sum = brier_sum + pred ** 2
+      }
+    }
+    ratingChange = update(winner_rating, loser_rating)
+    testRatings[winner_name] = winner_rating + ratingChange
+    testRatings[loser_name] = loser_rating - ratingChange
+    if (surface == "Clay") {
+      winner_rating = testClayRatings[[winner_name]]
+      loser_rating = testClayRatings[[loser_name]]
+      ratingChange = update(winner_rating, loser_rating)
+      
+      testClayRatings[winner_name] = winner_rating + ratingChange
+      testClayRatings[loser_name] = loser_rating - ratingChange  
+    }
+    if (surface == "Grass") {
+      winner_rating = testGrassRatings[[winner_name]]
+      loser_rating = testGrassRatings[[loser_name]]
+      ratingChange = update(winner_rating, loser_rating)
+      testGrassRatings[winner_name] = winner_rating + ratingChange
+      testGrassRatings[loser_name] = loser_rating - ratingChange  
+    }
+    if (surface == "Hard") {
+      winner_rating = testHardRatings[[winner_name]]
+      loser_rating = testHardRatings[[loser_name]]
+      ratingChange = update(winner_rating, loser_rating)
+      testHardRatings[winner_name] = winner_rating + ratingChange
+      testHardRatings[loser_name] = loser_rating - ratingChange  
+    }
+}
+accuracy = 100 * (correct_prediction_counter/match_counter)
+accuracy
+calibration = sums_higher/correct_prediction_counter
+calibration
+discrimination = calibration - (sums_lower/wrong_prediction_counter)
+discrimination
+brier_score = brier_sum/match_counter
+brier_score
+```
+Surface + General ELO
+
+```{r}
+slams = list("US Open", "Australian Open", "Roland Garros", "Wimbledon")
+year = testYear - startYear + 1
+test_dat = atp_singles_data[[year]]
+testPlayed = matchesPlayed
+testRatings = eloRatings
+testClayRatings = clayRatings
+testHardRatings = hardRatings
+testGrassRatings = grassRatings
+match_counter = 0
+correct_prediction_counter = 0
+sums_higher = 0
+wrong_prediction_counter = 0
+sums_lower = 0
+brier_sum = 0
+for (row in 1:nrow(test_dat)) {
+    winner_name = test_dat[row, "winner_name"]
+    loser_name = test_dat[row, "loser_name"]
+    if (!(winner_name %in% names(testRatings))) {
+      testRatings[winner_name] = 1500
+      testClayRatings[winner_name] = 1500
+      testGrassRatings[winner_name] = 1500
+      testHardRatings[winner_name] = 1500
+    } 
+    if (!(loser_name %in% names(testRatings))) {
+      testRatings[loser_name] = 1500
+      testClayRatings[loser_name] = 1500
+      testGrassRatings[loser_name] = 1500
+      testHardRatings[loser_name] = 1500
+    } 
+    surface_winner_rating = 0
+    surface_loser_rating = 0
+    surface = test_dat[row, "surface"]
+    if (surface == "Hard") {
+      surface_winner_rating = testHardRatings[[winner_name]]
+      surface_loser_rating = testHardRatings[[loser_name]] 
+    }
+    if (surface == "Clay") {
+      surface_winner_rating = testClayRatings[[winner_name]]
+      surface_loser_rating = testClayRatings[[loser_name]]   
+    }
+    if (surface == "Grass") {
+      surface_winner_rating = testGrassRatings[[winner_name]]
+      surface_loser_rating = testGrassRatings[[loser_name]]   
+    }
+    winner_rating = testRatings[[winner_name]]
+    loser_rating = testRatings[[loser_name]]
+    combined_winner_rating = (winner_rating + surface_winner_rating)/2
+    combined_loser_rating = (loser_rating + surface_loser_rating)/2
+    if (test_dat[row, "tourney_name"] %in% slams) {
+      match_counter = match_counter + 1
+      pred = 1 - 1/(1 + exp((abs(combined_winner_rating - combined_loser_rating))/174))
+      if (combined_winner_rating >= combined_loser_rating) {
+        correct_prediction_counter = correct_prediction_counter + 1
+        sums_higher = sums_higher + pred
+        brier_sum = brier_sum + (1 - pred) ** 2
+      }  
+      else {
+        wrong_prediction_counter = wrong_prediction_counter + 1
+        sums_lower = sums_lower + pred
+        brier_sum = brier_sum + pred ** 2
+      }
+    }
+    ratingChange = update(winner_rating, loser_rating)
+    testRatings[winner_name] = winner_rating + ratingChange
+    testRatings[loser_name] = loser_rating - ratingChange
+    if (surface == "Clay") {
+      winner_rating = testClayRatings[[winner_name]]
+      loser_rating = testClayRatings[[loser_name]]
+      ratingChange = update(winner_rating, loser_rating)
+      
+      testClayRatings[winner_name] = winner_rating + ratingChange
+      testClayRatings[loser_name] = loser_rating - ratingChange  
+    }
+    if (surface == "Grass") {
+      winner_rating = testGrassRatings[[winner_name]]
+      loser_rating = testGrassRatings[[loser_name]]
+      ratingChange = update(winner_rating, loser_rating)
+      testGrassRatings[winner_name] = winner_rating + ratingChange
+      testGrassRatings[loser_name] = loser_rating - ratingChange  
+    }
+    if (surface == "Hard") {
+      winner_rating = testHardRatings[[winner_name]]
+      loser_rating = testHardRatings[[loser_name]]
+      ratingChange = update(winner_rating, loser_rating)
+      testHardRatings[winner_name] = winner_rating + ratingChange
+      testHardRatings[loser_name] = loser_rating - ratingChange  
+    }
+}
+accuracy = 100 * (correct_prediction_counter/match_counter)
+accuracy
+calibration = sums_higher/correct_prediction_counter
+calibration
+discrimination = calibration - (sums_lower/wrong_prediction_counter)
+discrimination
+brier_score = brier_sum/match_counter
+brier_score
+```
+
+ATP Rankings Data
+
+```{r}
+year = testYear - startYear + 1
+correct_counter = 0
+wrong_counter = 0
+match_counter = 0
+e = 0.85
+sum_higher = 0
+sum_lower = 0
+brier_sum = 0
+test_dat = atp_singles_data[[year]]
+for (row in 1:nrow(test_dat)) {
+  winner_rank_points = test_dat[row, "winner_rank_points"]
+  loser_rank_points = test_dat[row, "loser_rank_points"]
+  if (test_dat[row, "tourney_name"] %in% slams) {
+    match_counter = match_counter + 1
+    print(winner_rank_points ** e)
+    if (loser_rank_points <= winner_rank_points) {
+      pred = (winner_rank_points ** e)/(winner_rank_points ** e + loser_rank_points ** e)
+      correct_counter = correct_counter + 1
+      sum_higher = sum_higher + pred
+      brier_sum = brier_sum + (1 - pred) ** 2
+    }
+    else {
+      pred = (loser_rank_points ** e)/(winner_rank_points ** e + loser_rank_points ** e)
+      wrong_counter = wrong_counter + 1
+      sum_lower = sum_lower + pred
+      brier_sum = brier_sum + pred ** 2
+    }
+  }
+}
+accuracy = correct_counter/match_counter
+accuracy
+calibration = sum_higher/correct_counter
+calibration
+discrimination = calibration - (sum_lower/wrong_counter)
+discrimination
+brier_score = brier_sum/match_counter
+brier_score
+
+```
+
+Betting Odds
+
+```{r}
+slams = c("Australian Open", "French Open", "Wimbledon", "US Open")
+correct_counter = 0
+wrong_counter = 0
+match_counter = 0
+sum_higher = 0
+sum_lower = 0
+brier_sum = 0
+
+for (row in 1:nrow(betting_data)) {
+  winner_points = betting_data[row, "B365W"]
+  loser_points = betting_data[row, "B365L"]
+  winner_odds = loser_points/(winner_points + loser_points)
+  if (is.na(winner_points) | is.na(loser_points)) {
+    next
+  }
+  if (betting_data[row, "Tournament"] %in% slams) {
+    match_counter = match_counter + 1
+    if (winner_points <= loser_points) {
+      correct_counter = correct_counter + 1
+      sum_higher = sum_higher + winner_odds
+      brier_sum = brier_sum + (1 - winner_odds) ** 2
+    }
+    else {
+      wrong_counter = wrong_counter + 1
+      sum_lower = sum_lower + (1 - winner_odds)
+      brier_sum = brier_sum + winner_odds ** 2
+    }
+  }
+}
+accuracy = correct_counter/match_counter
+accuracy
+calibration = sum_higher/correct_counter
+calibration
+discrimination = calibration - (sum_lower/wrong_counter)
+discrimination
+brier_score = brier_sum/match_counter
+brier_score
+
+```
+
+```
+
+
